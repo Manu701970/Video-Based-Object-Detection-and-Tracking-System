@@ -1,296 +1,295 @@
 
 import streamlit as st
 import cv2
-import pandas as pd
 import tempfile
 import os
-from collections import defaultdict
+import pandas as pd
+from collections import Counter
 from ultralytics import YOLO
 
 # ---------------- PAGE CONFIG ----------------
 st.set_page_config(
-    page_title="Object Detection and Tracking",
-    page_icon="🚘",
+    page_title="Object Detection and Tracking System",
+    page_icon="🎯",
     layout="wide"
 )
 
-st.title("🚘 Video-Based Object Detection and Tracking System")
+# ---------------- TITLE ----------------
+st.title("🎯 Video-Based Object Detection and Tracking System")
 st.write(
-    "Detect, track and count unique objects in uploaded videos "
-    "using YOLOv8 and ByteTrack."
+    "Computer Graphics and Image Processing Project"
 )
+
+st.markdown("""
+Detects and tracks objects in uploaded videos using YOLO and ByteTrack.
+Each confirmed tracking ID is counted only once.
+""")
+
+# ---------------- SETTINGS ----------------
+CONFIDENCE = 0.35
+IMAGE_SIZE = 640
+MIN_TRACK_HITS = 3
 
 # ---------------- LOAD MODEL ----------------
 @st.cache_resource
 def load_model():
     return YOLO("yolov8n.pt")
 
-model = load_model()
-
-# ---------------- SIDEBAR ----------------
-st.sidebar.header("Detection Settings")
-
-confidence = st.sidebar.slider(
-    "Confidence Threshold",
-    min_value=0.10,
-    max_value=1.00,
-    value=0.40,
-    step=0.05
-)
-
-st.sidebar.info(
-    "Higher confidence values may reduce false detections, "
-    "but may also miss some objects."
-)
-
 # ---------------- VIDEO UPLOAD ----------------
 uploaded_file = st.file_uploader(
     "Upload a video",
-    type=["mp4", "avi", "mov"]
+    type=["mp4", "avi", "mov", "mkv"]
 )
 
 if uploaded_file is not None:
 
-    # Save uploaded video temporarily
-    input_temp = tempfile.NamedTemporaryFile(
-        delete=False,
-        suffix=".mp4"
-    )
-
-    input_temp.write(uploaded_file.getvalue())
-    input_temp.close()
-
-    video_path = input_temp.name
-
-    # Video information
-    cap = cv2.VideoCapture(video_path)
-
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-
-    if fps <= 0:
-        fps = 30
-
-    cap.release()
-
     st.video(uploaded_file)
 
-    st.write("### Video Information")
-
-    col1, col2, col3 = st.columns(3)
-
-    col1.metric("Video FPS", round(fps, 2))
-    col2.metric("Resolution", f"{width} x {height}")
-    col3.metric("Total Frames", total_frames)
-
-    # ---------------- START PROCESSING ----------------
     if st.button("Start Detection and Tracking", type="primary"):
 
-        cap = cv2.VideoCapture(video_path)
+        input_path = None
+        output_path = None
 
-        output_temp = tempfile.NamedTemporaryFile(
-            delete=False,
-            suffix=".mp4"
-        )
-        output_temp.close()
+        try:
+            # Save uploaded video
+            with tempfile.NamedTemporaryFile(
+                delete=False,
+                suffix=".mp4"
+            ) as temp_input:
+                temp_input.write(uploaded_file.read())
+                input_path = temp_input.name
 
-        output_path = output_temp.name
+            # Open video
+            cap = cv2.VideoCapture(input_path)
 
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+            if not cap.isOpened():
+                st.error("Unable to open the uploaded video.")
+                st.stop()
 
-        writer = cv2.VideoWriter(
-            output_path,
-            fourcc,
-            fps,
-            (width, height)
-        )
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-        # Store unique tracked objects
-        tracked_objects = {}
+            if fps <= 0:
+                fps = 25.0
 
-        # Store detection events across frames
-        detection_events = defaultdict(int)
+            if width <= 0 or height <= 0:
+                st.error("Invalid video dimensions.")
+                cap.release()
+                st.stop()
 
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-        video_display = st.empty()
+            # Create output video
+            with tempfile.NamedTemporaryFile(
+                delete=False,
+                suffix=".mp4"
+            ) as temp_output:
+                output_path = temp_output.name
 
-        frame_count = 0
+            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
 
-        # ---------------- PROCESS VIDEO ----------------
-        while cap.isOpened():
-
-            ret, frame = cap.read()
-
-            if not ret:
-                break
-
-            results = model.track(
-                frame,
-                persist=True,
-                tracker="bytetrack.yaml",
-                conf=confidence,
-                verbose=False
+            writer = cv2.VideoWriter(
+                output_path,
+                fourcc,
+                fps,
+                (width, height)
             )
 
-            result = results[0]
+            if not writer.isOpened():
+                st.error("Unable to create the output video.")
+                cap.release()
+                st.stop()
 
-            # Draw bounding boxes and tracking IDs
-            annotated_frame = result.plot()
+            # Load YOLO model
+            model = load_model()
 
-            # Extract tracking IDs and classes
-            if result.boxes is not None and result.boxes.id is not None:
+            # Store tracking information
+            track_information = {}
 
-                ids = result.boxes.id.cpu().numpy().astype(int)
-                classes = result.boxes.cls.cpu().numpy().astype(int)
+            frame_count = 0
 
-                for track_id, class_id in zip(ids, classes):
+            progress = st.progress(0)
+            status = st.empty()
 
-                    class_name = model.names[int(class_id)]
+            st.info("Processing video. Please wait...")
 
-                    # Count detections across frames
-                    detection_events[class_name] += 1
+            # ---------------- PROCESS VIDEO ----------------
+            while True:
 
-                    # Store each unique tracking ID only once
-                    if track_id not in tracked_objects:
-                        tracked_objects[track_id] = class_name
+                success, frame = cap.read()
 
-            # Write processed frame
-            writer.write(annotated_frame)
+                if not success:
+                    break
 
-            # Display processed frame
-            preview_frame = cv2.cvtColor(
-                annotated_frame,
-                cv2.COLOR_BGR2RGB
-            )
+                frame_count += 1
 
-            video_display.image(
-                preview_frame,
-                channels="RGB",
-                use_container_width=True
-            )
-
-            frame_count += 1
-
-            # Update progress
-            if total_frames > 0:
-                progress_bar.progress(
-                    min(frame_count / total_frames, 1.0)
+                # YOLO + ByteTrack
+                results = model.track(
+                    frame,
+                    persist=True,
+                    tracker="bytetrack.yaml",
+                    conf=CONFIDENCE,
+                    imgsz=IMAGE_SIZE,
+                    verbose=False
                 )
 
-            status_text.text(
-                f"Processing frame {frame_count}/{total_frames}"
-            )
+                result = results[0]
 
-        # Release resources
-        cap.release()
-        writer.release()
+                # Read tracking information
+                if (
+                    result.boxes is not None
+                    and result.boxes.id is not None
+                ):
 
-        progress_bar.progress(1.0)
-        status_text.success("Video processing completed!")
+                    boxes = result.boxes
+                    track_ids = boxes.id.int().cpu().tolist()
+                    class_ids = boxes.cls.int().cpu().tolist()
 
-        # ---------------- DASHBOARD ----------------
-        st.subheader("📊 Object Counting Dashboard")
+                    for track_id, class_id in zip(
+                        track_ids,
+                        class_ids
+                    ):
 
-        # Total unique tracked IDs
-        total_unique_objects = len(tracked_objects)
+                        class_name = model.names[class_id]
 
-        # Class-wise unique counts
-        unique_class_counts = defaultdict(int)
+                        if track_id not in track_information:
+                            track_information[track_id] = {
+                                "hits": 0,
+                                "classes": Counter()
+                            }
 
-        for class_name in tracked_objects.values():
-            unique_class_counts[class_name] += 1
+                        track_information[track_id]["hits"] += 1
 
-        col1, col2 = st.columns(2)
+                        track_information[track_id]["classes"][
+                            class_name
+                        ] += 1
 
-        col1.metric(
-            "Total Unique Objects",
-            total_unique_objects
-        )
+                # Draw boxes and tracking IDs
+                annotated_frame = result.plot()
 
-        col2.metric(
-            "Object Categories",
-            len(unique_class_counts)
-        )
+                writer.write(annotated_frame)
 
-        # ---------------- UNIQUE OBJECTS ----------------
-        if unique_class_counts:
+                # Update progress
+                if total_frames > 0:
+                    progress.progress(
+                        min(frame_count / total_frames, 1.0)
+                    )
 
-            st.subheader("Unique Objects by Category")
+                status.text(
+                    f"Processed {frame_count} / {total_frames} frames"
+                )
 
-            df = pd.DataFrame(
-                list(unique_class_counts.items()),
-                columns=["Object", "Unique Count"]
-            )
+            # Release video resources
+            cap.release()
+            writer.release()
 
-            df = df.sort_values(
-                by="Unique Count",
-                ascending=False
-            ).reset_index(drop=True)
+            progress.progress(1.0)
+            status.success("Video processing completed!")
 
-            st.dataframe(
-                df,
-                use_container_width=True
-            )
+            # ---------------- FINAL COUNTS ----------------
+            confirmed_tracks = []
 
-            # Chart
-            st.subheader("Unique Object Count Chart")
+            for track_id, information in track_information.items():
 
-            st.bar_chart(
-                df.set_index("Object")["Unique Count"]
-            )
+                # Ignore very short-lived tracks
+                if information["hits"] >= MIN_TRACK_HITS:
 
-        else:
-            st.warning("No tracked objects were detected.")
+                    # Assign the most frequently detected class
+                    final_class = information["classes"].most_common(1)[0][0]
 
-        # ---------------- DETECTION EVENTS ----------------
-        st.subheader("Repeated Detection Records (Across Frames)")
+                    confirmed_tracks.append({
+                        "Tracking ID": track_id,
+                        "Object": final_class,
+                        "Frames Detected": information["hits"]
+                    })
 
-        st.caption(
-            "This table represents the total number of detections "
-            "recorded across video frames. The same object may be "
-            "detected multiple times and is not counted as a separate "
-            "unique object each time."
-        )
+            tracking_df = pd.DataFrame(confirmed_tracks)
 
-        if detection_events:
+            if not tracking_df.empty:
 
-            event_df = pd.DataFrame(
-                list(detection_events.items()),
-                columns=["Object", "Detection Events"]
-            )
+                object_counts = (
+                    tracking_df["Object"]
+                    .value_counts()
+                    .rename_axis("Object")
+                    .reset_index(name="Unique Tracked IDs")
+                )
 
-            event_df = event_df.sort_values(
-                by="Detection Events",
-                ascending=False
-            ).reset_index(drop=True)
+                total_objects = len(tracking_df)
 
-            st.dataframe(
-                event_df,
-                use_container_width=True
-            )
+            else:
 
-        else:
-            st.info("No detection events recorded.")
+                object_counts = pd.DataFrame(
+                    columns=["Object", "Unique Tracked IDs"]
+                )
 
-        # ---------------- DOWNLOAD VIDEO ----------------
-        st.subheader("📥 Processed Video")
+                total_objects = 0
 
-        if os.path.exists(output_path):
+            # ---------------- DASHBOARD ----------------
+            st.header("📊 Detection Dashboard")
 
-            with open(output_path, "rb") as video_file:
+            col1, col2, col3 = st.columns(3)
+
+            col1.metric("Total Frames", frame_count)
+            col2.metric("Confirmed Tracked Objects", total_objects)
+            col3.metric("Object Categories", len(object_counts))
+
+            st.subheader("Object Counts")
+
+            if not object_counts.empty:
+                st.dataframe(
+                    object_counts,
+                    use_container_width=True,
+                    hide_index=True
+                )
+
+                st.bar_chart(
+                    object_counts.set_index("Object")
+                )
+
+                st.subheader("Tracking Details")
+
+                st.dataframe(
+                    tracking_df,
+                    use_container_width=True,
+                    hide_index=True
+                )
+
+                csv_data = tracking_df.to_csv(index=False).encode("utf-8")
 
                 st.download_button(
-                    label="Download Processed Video",
-                    data=video_file,
-                    file_name="tracked_video.mp4",
-                    mime="video/mp4"
+                    "Download Tracking Report (CSV)",
+                    data=csv_data,
+                    file_name="object_tracking_report.csv",
+                    mime="text/csv"
                 )
 
-        # ---------------- CLEANUP ----------------
-        try:
-            os.remove(video_path)
-        except OSError:
-            pass
+            else:
+                st.warning(
+                    "No objects were tracked for at least "
+                    f"{MIN_TRACK_HITS} frames."
+                )
+
+            # ---------------- PROCESSED VIDEO ----------------
+            st.header("🎬 Processed Video")
+
+            with open(output_path, "rb") as video_file:
+                video_bytes = video_file.read()
+
+            st.video(video_bytes)
+
+            st.download_button(
+                "Download Processed Video",
+                data=video_bytes,
+                file_name="processed_video.mp4",
+                mime="video/mp4"
+            )
+
+            st.success("Analysis completed successfully!")
+
+        except Exception as error:
+            st.error(f"An error occurred: {error}")
+
+        finally:
+            # Release and remove temporary input file
+            if input_path and os.path.exists(input_path):
+                os.remove(input_path)
