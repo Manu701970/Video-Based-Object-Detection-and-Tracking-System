@@ -1,7 +1,7 @@
 # 🎯 Video-Based Object Detection and Tracking System
 
 ## 🌐 Live Application
-**Try the project here:**  
+** the project :**  
 [Video-Based Object Detection and Tracking System](https://video-based-object-detection-and-tracking-system-iw38lnm8dxiwa.streamlit.app/)
 
 ## 📌 Project Overview
